@@ -1,0 +1,465 @@
+# To generate the bird body mass distribution map
+
+library(sf)
+library(raster)
+library(tidyverse)
+library(fasterize)
+
+#--------------------------------------------------------------------
+# New HWI map
+# All Species
+#--------------------------------------------------------------------
+
+## read in the Bodymass file
+gbd <- BM_For_Shuyi
+
+
+#I have only sent you the Bodymass so can skip this step
+birdlife_BM <- gbd %>%
+  dplyr::select(Birdlife_Name, SpecGenFinalMass)
+
+## remove NAs
+birdlife_BM <- na.omit(birdlife_BM)
+
+# Change the name of the bodymass column
+colnames(birdlife_BM)[2] <- "BM"
+
+## Take the logs of BM (this will make a big difference at the end as most birds are small very few are big can skew the map
+birdlife_BM$BM <- log(birdlife_BM$BM)
+
+# Read in the maps - this will take a little time
+maps <- st_read("C:/Users/tlw119/Dropbox/My drive/Global Dataset/Birdlife Ranges/BirdLife International/BOTW/BOTW.gdb", layer="All_Species")
+
+# Filter for which maps you need
+sample_maps <- maps %>% filter(SCINAME %in% birdlife_BM$Birdlife_Name,
+                               PRESENCE %in% c(1, 2),
+                               SEASONAL %in% c(1, 2))
+
+# join the bodymass data to the maps file
+all_species_BM <- left_join(birdlife_BM, sample_maps, by = c("Birdlife_Name" = "SCINAME"))
+
+
+#----------------------------------------
+## Reformatting section
+## it now works
+#----------------------------------------
+
+#Turn all maps to "sf" from "st" format
+all_species_BM <- st_as_sf(all_species_BM)
+
+#Create an empty vector to store the format name
+vec <- rep("NA", length(all_species_BM$Shape))
+
+# populate the vector with the formatted name
+for (j in 1:length(all_species_BM$Shape)) {
+  print(j)
+  vec[j] <- class(all_species_BM$Shape[j])[1] 
+  
+  }
+
+#Check different types of format
+table(vec)
+
+### Correct the Multisurfaces into MULTIPOLYGON
+for(i in which(vec == "sfc_MULTISURFACE")) {
+  all_species_BM$Shape[[i]] <- st_cast(all_species_BM$Shape[[i]], "MULTIPOLYGON")
+}
+
+## Then remove all the geocollections
+all_species_BM <- all_species_BM[-which(vec == "sfc_GEOMETRYCOLLECTION"),]
+
+##===================================================
+## Plotting section
+##===================================================
+
+# create an empty raster
+r <- raster(ncols=4320, nrow = 1800, ymn = -60)
+
+# perform the fasterize function 
+# this one will overlay all the maps and for each tile/grid square take the sum of the "HWI" values which overlap it 
+HWI_sum <- fasterize(all_species_BM, r, field = "HWI", fun = "sum")
+
+# this one will take the sum of the number of ranges which overlap it
+SR_sum <- fasterize(all_species_BM, r, fun = "sum")
+
+# take the mean
+HWI_mean <- HWI_sum/SR_sum
+
+# can plot like this but will have birds which go over the water
+plot(HWI_mean)
+
+
+#--------------------------------------------------------
+##Instead use ggplot2
+#--------------------------------------------------------
+
+#Set areas with no HWI values or a SR of less than 5, to 0 - these will be later turned to NA in dataframe 
+
+# tiles with NA values - set to 0
+HWI_mean[which(is.na(getValues(HWI_mean)))] <- 0
+
+# set the values of the HWI raster to 0 in all the places where the SR raster is < 5
+HWI_mean_5 <- HWI_mean
+HWI_mean_5[SR_sum < 5] <- 0
+
+### read in the environmental raster this MUST be the same resolution as your raster
+## you may want to change the resolution for many reasons e.g. there may be areas of very high BM which can be softened using a lower resolution
+## if you do want to use a lower resolution set res to 10 bellow
+## you will then have to set your black raster (r) to ncols = 2160 and nrows = 900
+# for higher resolution set res = 2.5 in envar. and ncols = 8640, nrows = 3600
+
+envar <- getData("worldclim", var = "bio", res=5)[[1]] #download the env rasters
+
+# set all the NA areas of the envar (all water) to NA in your raster
+HWI_mean_5[which(is.na(getValues(envar$bio1)))] <- NA
+
+#turn your raster into a dataframe - this is the only way ggplot can read it
+# xy = true, keeps the coordinate system of the raster - drop NAs will remove everything you have set to NA (water)
+all_rasdf <- as.data.frame(HWI_mean_5, xy = TRUE) %>% drop_na()
+
+# Now set a new NA value for all your 0s - this way you can set an NA color in the ggplot to blank out the empty terrestrial areas
+# as we have already removed the water NAs in the line above these will just not exist
+all_rasdf$layer[all_rasdf$layer == 0] <- NA
+
+# set the colname to BM
+colnames(all_rasdf)[3] <- "BM"
+
+
+## run the ggplot
+## play around with the scale in colors = "..."
+ggplot() +
+  geom_tile(aes(x=x, y=y, fill= BM), data=all_rasdf) +
+  scale_fill_gradientn(name = paste0("Dispersal", '\n', "limitation", '\n', "(nHWI)"),
+                       colors = c("dodgerblue4", "skyblue", "tomato", "red1", "red3", "firebrick"),
+                       na.value = "grey80",
+                       breaks = c(-3.2, -3.6, -4.0)) +
+  ylab("Latitude") + 
+  xlab("Longitude") +
+  ggtitle("Trait distribution heatmap")
+
+
+
+
+
+
+
+
+
+
+
+data<-na.omit(Bird_final)
+# To make bird body mass and latitude normally distributed
+hist(data$logMass)
+data$logMass<-log(data$Mass)
+hist(data$Centroid.Latitude)
+data$abs_latitude<-abs(data$Centroid.Latitude)
+data$sqrt_abslatitude<-sqrt(data$abs_latitude)
+hist(data$sqrt_abslatitude)
+
+# Discover whether sqrt_abslatitude predicts bird body mass and get a plot
+basic.lm<-lm(data$logMass~data$sqrt_abslatitude)
+summary(basic.lm)
+library(ggplot2)
+(prelim_plot<-ggplot(data, aes(x=sqrt_abslatitude,y=logMass))+geom_point(size=1,aes(colour=factor(Order)))+geom_smooth(method="lm")+xlab("Square Root of Absolute Latitude")+ylab("Log Body Mass"))
+plot(basic.lm,which=2)
+
+# Look over the mean body mass of each trophic level
+boxplot(data$logMass~data$`TrophicNiche (diet)`,xlab="Bird Diet",ylab="Log Bird Body Mass")
+(colour_plot<-ggplot(data, aes(x=sqrt_abslatitude,y=logMass,colour=TrophicLevel))+geom_point()+theme_classic()+theme(legend.position="none"))
+(split_plot<-ggplot(aes(sqrt_abslatitude,`TrophicNiche (diet)`),data=data)+geom_point()+facet_wrap(~TrophicLevel)+xlab("Annual Mean Temperature")+ylab("Body Mass"))
+trophic.lm<-lm(data$logMass~data$sqrt_abslatitude+data$TrophicLevel)
+summary(trophic.lm)
+
+# Get a linear mixed model accounting diet and phylogeny into the effect of latitude/temperature on bird body mass
+library(lme4)  
+mixed.lmer<-lmer(data$logMass~data$sqrt_abslatitude+data$Annual_mean_temperature+data$TrophicLevel+(1|data$`TrophicNiche (diet)`)+(1|Order/Family/Genus),data=data)
+summary(mixed.lmer)
+plot(mixed.lmer)
+#Despite the residual plot looks slightly off, this is the best model I could get.
+qqnorm(resid(mixed.lmer))
+qqline(resid(mixed.lmer))
+
+# Report the statistical result as a table
+install.packages("stargazer")
+library(stargazer)
+stargazer(mixed.lmer,type="text",digits=3,star.cutoffs = c(0.05,0.01,0.001),digit.separator="")
+
+# Check the significance of fixed effects
+full.lmer<-lmer(data$logMass~data$sqrt_abslatitude+data$Annual_mean_temperature+data$TrophicLevel+(1|data$`TrophicNiche (diet)`)+(1|Order/Family/Genus),data=data,REML=FALSE)
+reduced.lmer<-lmer(data$logMass~1+(1|data$`TrophicNiche (diet)`)+(1|Order/Family/Genus),data=data,REML=FALSE)
+anova(reduced.lmer,full.lmer)
+anova(mixed.lmer)
+
+# Check the significance of random effect phylogeny
+reduced.lmer2<-lmer(data$logMass~data$sqrt_abslatitude+data$Annual_mean_temperature+data$TrophicLevel+(1|Order/Family/Genus),data=data,REML=FALSE)
+anova(reduced.lmer2,full.lmer)
+
+# Check the significance of random effect bird diet
+reduced.lmer3<-lmer(data$logMass~data$sqrt_abslatitude+data$Annual_mean_temperature+data$TrophicLevel+(1|data$`TrophicNiche (diet)`),data=data,REML=FALSE)
+anova(reduced.lmer3,full.lmer)
+
+# Get the explanatory power of the full model
+install.packages("performance")
+library(performance)
+model_performance(mixed.lmer)
+
+# linear regressions for temperature and latitdue
+hist(data$abs_latitude)
+hist(data$Annual_mean_temperature)
+lm(data$Annual_mean_temperature~data$abs_latitude)
+data$sqrt_abslatitude<-sqrt(data$abs_latitude)
+hist(data$sqrt_abslatitude)
+plot(data$Annual_mean_temperature~data$Centroid.Latitude)
+plot(data$Centroid.Latitude~data$Annual_mean_temperature)
+library(ggplot2)
+qplot(data$Centroid.Latitude,data$Annual_mean_temperature)+stat_smooth()+labs(y="Annual Mean Temperature (°C)",x="Latitude (°)")
+qplot(data$abs_latitude,data$Annual_mean_temperature)+stat_smooth()+labs(y="Annual Mean Temperature (°C)",x="Absolute Latitude (°)")
+qplot(data$abs_latitude,data$logMass)+stat_smooth()+labs(y="Log Bird Body Mass (g)",x="Latitude (°)")
+model1<-lm(data$Annual_mean_temperature~data$abs_latitude)
+summary(model1)
+model2<-lm(data$Annual_mean_temperature~data$Centroid.Latitude)
+summary(model2)
+
+# Compare difference (i.e., mean and median) among different trophic levels
+model3<-lm(data$logMass~data$sqrt_abslatitude)
+summary(model3)
+data1<-subset(data,TrophicLevel=="Carnivore")
+data2<-subset(data,TrophicLevel=="Herbivore")
+data3<-subset(data,TrophicLevel=="Omnivore")
+data4<-subset(data,TrophicLevel=="Scavenger")
+mean(data1$logMass)
+median(data1$logMass)
+mean(data2$logMass)
+median(data2$logMass)
+mean(data3$logMass)
+median(data3$logMass)
+mean(data4$logMass)
+median(data4$logMass)
+
+# For generating table 1
+data5<-subset(data,Order=="ACCIPITRIFORMES")
+model5<-lm(data5$logMass~data5$sqrt_abslatitude)
+summary(model5)
+data6<-subset(data,Order=="ANSERIFORMES")
+model6<-lm(data6$logMass~data6$sqrt_abslatitude)
+summary(model6)
+data7<-subset(data,Order=="BUCEROTIFORMES")
+model7<-lm(data7$logMass~data7$sqrt_abslatitude)
+summary(model7)
+
+
+data8<-subset(data,Order=="CAPRIMULGIFORMES")
+model8<-lm(data8$logMass~data8$sqrt_abslatitude)
+summary(model8)
+data9<-subset(data,Order=="CARIAMIFORMES")
+model9<-lm(data9$logMass~data9$sqrt_abslatitude)
+summary(model9)
+data10<-subset(data,Order=="CATHARTIFORMES")
+model10<-lm(data10$logMass~data10$sqrt_abslatitude)
+summary(model10)
+tab_model(model8,model9,model10)
+
+data11<-subset(data,Order=="CHARADRIIFORMES")
+model11<-lm(data11$logMass~data11$sqrt_abslatitude)
+summary(model11)
+data12<-subset(data,Order=="CICONIIFORMES")
+model12<-lm(data12$logMass~data12$sqrt_abslatitude)
+summary(model12)
+data13<-subset(data,Order=="COLIIFORMES")
+model13<-lm(data13$logMass~data13$sqrt_abslatitude)
+summary(model13)
+tab_model(model11,model12,model13)
+
+data14<-subset(data,Order=="COLUMBIFORMES")
+model14<-lm(data14$logMass~data14$sqrt_abslatitude)
+summary(model14)
+data15<-subset(data,Order=="CORACIIFORMES")
+model15<-lm(data15$logMass~data15$sqrt_abslatitude)
+summary(model15)
+data16<-subset(data,Order=="CUCULIFORMES")
+model16<-lm(data16$logMass~data16$sqrt_abslatitude)
+summary(model16)
+tab_model(model14,model15,model16)
+
+data17<-subset(data,Order=="EURYPYGIFORMES")
+model17<-lm(data17$logMass~data17$sqrt_abslatitude)
+summary(model17)
+data18<-subset(data,Order=="FALCONIFORMES")
+model18<-lm(data18$logMass~data18$sqrt_abslatitude)
+summary(model18)
+data19<-subset(data,Order=="GALLIFORMES")
+model19<-lm(data19$logMass~data19$sqrt_abslatitude)
+summary(model19)
+tab_model(model17,model18,model19)
+
+data20<-subset(data,Order=="GAVIIFORMES")
+model20<-lm(data20$logMass~data20$sqrt_abslatitude)
+summary(model20)
+data21<-subset(data,Order=="GRUIFORMES")
+model21<-lm(data21$logMass~data21$sqrt_abslatitude)
+summary(model21)
+data22<-subset(data,Order=="LEPTOSOMIFORMES")
+model22<-lm(data22$logMass~data22$sqrt_abslatitude)
+summary(model22)
+tab_model(model20,model21,model22)
+
+
+data23<-subset(data,Order=="MESITORNITHIFORMES")
+model23<-lm(data23$logMass~data23$sqrt_abslatitude)
+summary(model23)
+data24<-subset(data,Order=="MUSOPHAGIFORMES")
+model24<-lm(data24$logMass~data24$sqrt_abslatitude)
+summary(model24)
+data25<-subset(data,Order=="OPISTHOCOMIFORMES")
+model25<-lm(data25$logMass~data25$sqrt_abslatitude)
+summary(model25)
+tab_model(model23,model24,model25)
+
+
+data26<-subset(data,Order=="OTIDIFORMES")
+model26<-lm(data26$logMass~data26$sqrt_abslatitude)
+summary(model26)
+data27<-subset(data,Order=="PASSERIFORMES")
+model27<-lm(data27$logMass~data27$sqrt_abslatitude)
+summary(model27)
+data28<-subset(data,Order=="PELECANIFORMES")
+model28<-lm(data28$logMass~data28$sqrt_abslatitude)
+summary(model28)
+tab_model(model26,model27,model28)
+
+
+data29<-subset(data,Order=="PHAETHONTIFORMES")
+model29<-lm(data29$logMass~data29$sqrt_abslatitude)
+summary(model29)
+data30<-subset(data,Order=="PHOENICOPTERIFORMES")
+model30<-lm(data30$logMass~data30$sqrt_abslatitude)
+summary(model30)
+data31<-subset(data,Order=="PICIFORMES")
+model31<-lm(data31$logMass~data31$sqrt_abslatitude)
+summary(model31)
+tab_model(model29,model30,model31)
+
+
+data32<-subset(data,Order=="PODICIPEDIFORMES")
+model32<-lm(data32$logMass~data32$sqrt_abslatitude)
+summary(model32)
+data33<-subset(data,Order=="PROCELLARIIFORMES")
+model33<-lm(data33$logMass~data33$sqrt_abslatitude)
+summary(model33)
+data34<-subset(data,Order=="PSITTACIFORMES")
+model34<-lm(data34$logMass~data34$sqrt_abslatitude)
+summary(model34)
+tab_model(model32,model33,model34)
+
+
+data35<-subset(data,Order=="PTEROCLIFORMES")
+model35<-lm(data35$logMass~data35$sqrt_abslatitude)
+summary(model35)
+data36<-subset(data,Order=="SPHENISCIFORMES")
+model36<-lm(data36$logMass~data36$sqrt_abslatitude)
+summary(model36)
+data37<-subset(data,Order=="STRIGIFORMES")
+model37<-lm(data37$logMass~data37$sqrt_abslatitude)
+summary(model37)
+tab_model(model35,model36,model37)
+
+data200<-subset(data, TrophicLevel=="Scavenger")
+data201<-subset(data, TrophicLevel=="Carnivore")
+data202<-subset(data,TrophicLevel=="Herbivore")
+data203<-subset(data,TrophicLevel=="Omnivore")
+model200<-lm(data200$logMass~data200$sqrt_abslatitude)
+model201<-lm(data201$logMass~data201$sqrt_abslatitude)
+model202<-lm(data202$logMass~data202$sqrt_abslatitude)
+model203<-lm(data203$logMass~data203$sqrt_abslatitude)
+summary(model200)
+summary(model201)
+summary(model202)
+summary(model203)
+library(ggplot2)
+ggplot(data203, aes(x=sqrt_abslatitude,y=logMass))+geom_point()+geom_smooth(method="lm",se=FALSE)+labs(x="Square Root of Absolute Latitude (°)",y="Log Body Mass (g)")
+plot()
+
+
+data38<-subset(data,Order=="STRUTHIONIFORMES")
+model38<-lm(data38$logMass~data38$sqrt_abslatitude)
+summary(model38)
+data39<-subset(data,Order=="SULIFORMES")
+model39<-lm(data39$logMass~data39$sqrt_abslatitude)
+summary(model39)
+data40<-subset(data,Order=="TROGONIFORMES")
+model40<-lm(data40$logMass~data40$sqrt_abslatitude)
+summary(model40)
+tab_model(model38,model39,model40)
+
+data15 Order CORACIIFORMES
+
+data100<-subset(data6,Family=="Anhimidae")
+
+model100<-lm(data100$logMass~data100$sqrt_abslatitude)
+summary(model100)
+
+
+data500<-subset(data,`TrophicNiche (diet)`=="Aquatic predator")
+data501<-subset(data,`TrophicNiche (diet)`=="Frugivore")
+data502<-subset(data,`TrophicNiche (diet)`=="Granivore")
+data503<-subset(data,`TrophicNiche (diet)`=="Herbivore aquatic")
+data504<-subset(data,`TrophicNiche (diet)`=="Herbivore terrestrial")
+data505<-subset(data,`TrophicNiche (diet)`=="Invertivore")
+data506<-subset(data,`TrophicNiche (diet)`=="Nectarivore")
+data507<-subset(data,`TrophicNiche (diet)`=="Omnivore")
+data508<-subset(data,`TrophicNiche (diet)`=="Scavenger")
+data509<-subset(data,`TrophicNiche (diet)`=="Vertivore")
+
+model500<-lm(data500$logMass~data500$sqrt_abslatitude)
+summary(model500)
+model501<-lm(data501$logMass~data501$sqrt_abslatitude)
+summary(model501)
+*model502<-lm(data502$logMass~data502$sqrt_abslatitude)
+summary(model502)
+model503<-lm(data503$logMass~data503$sqrt_abslatitude)
+summary(model503)
+*model504<-lm(data504$logMass~data504$sqrt_abslatitude)
+summary(model504)
+-*model505<-lm(data505$logMass~data505$sqrt_abslatitude)
+summary(model505)
+model506<-lm(data506$logMass~data506$sqrt_abslatitude)
+summary(model506)
+*model507<-lm(data507$logMass~data507$sqrt_abslatitude)
+summary(model507)
+*model508<-lm(data508$logMass~data508$sqrt_abslatitude)
+summary(model508)
+model509<-lm(data509$logMass~data509$sqrt_abslatitude)
+summary(model509)
+
+
+mean(data500$logMass)
+median(data500$logMass)
+mean(data501$logMass)
+median(data501$logMass)
+mean(data502$logMass)
+median(data502$logMass)
+mean(data503$logMass)
+median(data503$logMass)
+mean(data504$logMass)
+median(data504$logMass)
+mean(data505$logMass)
+median(data505$logMass)
+mean(data506$logMass)
+median(data506$logMass)
+mean(data507$logMass)
+median(data507$logMass)
+mean(data508$logMass)
+median(data508$logMass)
+mean(data509$logMass)
+median(data509$logMass)
+
+
+# To perform Tukey's HSD 
+install.packages("agricolae")
+library(agricolae)
+modell<-lm(data$logMass~data$`TrophicNiche (diet)`)
+av<-aov(modell)
+summary(modell)
+tukey.test<-TukeyHSD(av)
+tukey.test
+plot(tukey.test)
